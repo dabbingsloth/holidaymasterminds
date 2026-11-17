@@ -1,0 +1,201 @@
+rules_version = '2';
+
+// =====================================================================
+//  THE MASTERMINDS — Firestore security rules
+//  Paste this whole file into: Firebase console → Firestore Database →
+//  Rules tab → Publish.  Replace the two ADMIN UIDs below first.
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- who is asking? ----------
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Alexis & Mila: must be one of these two UIDs AND signed in with
+    // email/password (an anonymous relative can never match).
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'password'
+        && request.auth.uid in ['ADMIN_UID_ALEXIS', 'ADMIN_UID_MILA'];
+    }
+
+    function myHousehold() {
+      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data.h;
+    }
+
+    function isMember(h) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && myHousehold() == h;
+    }
+
+    // ---------- the real-time lock ----------
+
+    function validDay(n) {
+      return n in ['1','2','3','4','5','6','7','8','9','10','11','12'];
+    }
+
+    // Day n is open for household h when Google's server clock has passed
+    // the unlock time, OR an admin unlocked it early for that household.
+    function dayOpen(h, n) {
+      return request.time >= get(/databases/$(database)/documents/config/schedule).data.unlock[n]
+        || n in get(/databases/$(database)/documents/households/$(h)).data.early;
+    }
+
+    function solvedSummary(h) {
+      return get(/databases/$(database)/documents/progress/$(h)).data.solved;
+    }
+
+    // ---------- answer attempts ----------
+
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function isHash(v) {
+      return v is string && v.size() == 64;
+    }
+
+    // First guess on a day creates the attempt record.
+    function firstGuess() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['tries', 'cleared', 'guess', 'lastGuessAt'])
+        && d.tries == 1 && d.cleared == 0
+        && isHash(d.guess)
+        && d.lastGuessAt == request.time;
+    }
+
+    // Day 8 safe: after every 3rd try (since the last admin "clear"),
+    // no more guesses for 60 minutes after that 3rd try.
+    function notLockedOut(n) {
+      let t = resource.data.tries - resource.data.cleared;
+      return n != '8'
+        || t <= 0
+        || t % 3 != 0
+        || request.time >= resource.data.lastGuessAt + duration.value(60, 'm');
+    }
+
+    // Every later guess must add exactly 1 to the try counter.
+    function nextGuess(n) {
+      let d = request.resource.data;
+      return !('solvedAt' in resource.data)
+        && changed().hasOnly(['tries', 'guess', 'lastGuessAt'])
+        && d.tries == resource.data.tries + 1
+        && isHash(d.guess)
+        && d.lastGuessAt == request.time
+        && notLockedOut(n);
+    }
+
+    // Marking a day solved is only allowed if the last recorded guess
+    // equals the secret answer hash (which no browser can read).
+    function claim(n) {
+      return !('solvedAt' in resource.data)
+        && changed().hasOnly(['solvedAt'])
+        && request.resource.data.solvedAt == request.time
+        && resource.data.guess == get(/databases/$(database)/documents/answers/$(n)).data.hash;
+    }
+
+    // The household summary (used for reveals, the vault and the dashboard)
+    // may only gain a day that was really just claimed in the same write.
+    function summaryClaim(h) {
+      let n = request.resource.data.lastSolved;
+      let before = resource.data.solved;
+      let after = request.resource.data.solved;
+      return changed().hasOnly(['solved', 'lastSolved', 'lastActive'])
+        && validDay(n)
+        && !(n in before)
+        && after.diff(before).affectedKeys() == [n].toSet()
+        && after[n] == request.time
+        && request.resource.data.lastActive == request.time
+        && getAfter(/databases/$(database)/documents/progress/$(h)/d/$(n)).data.solvedAt == request.time;
+    }
+
+    function touchActive() {
+      return changed().hasOnly(['lastActive'])
+        && request.resource.data.lastActive == request.time;
+    }
+
+    // =================================================================
+    //  Collections
+    // =================================================================
+
+    // Unlock times + meetup date. Anyone signed in may read (countdowns).
+    match /config/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Puzzle content. Readable only once that day is open for your household.
+    match /days/{n} {
+      allow get: if isAdmin()
+        || (signedIn() && validDay(n) && dayOpen(myHousehold(), n));
+      allow list, write: if isAdmin();
+    }
+
+    // Answer hashes. No browser can read these except admins.
+    match /answers/{n} {
+      allow read, write: if isAdmin();
+    }
+
+    // Code-piece letters (+ Day 8 message). Readable after your household solves that day.
+    match /reveals/{n} {
+      allow get: if isAdmin()
+        || (signedIn() && n in solvedSummary(myHousehold()));
+      allow list, write: if isAdmin();
+    }
+
+    // Household settings (name, gentle mode, early unlocks). Admin-only writes.
+    match /households/{h} {
+      allow get: if isAdmin() || isMember(h);
+      allow list, write: if isAdmin();
+    }
+
+    // Each household's final word. Readable once Days 1–11 are solved and Day 12 is open.
+    match /finals/{h} {
+      allow get: if isAdmin()
+        || (isMember(h)
+            && dayOpen(h, '12')
+            && solvedSummary(h).keys().hasAll(['1','2','3','4','5','6','7','8','9','10','11']));
+      allow list, write: if isAdmin();
+    }
+
+    // Which household this browser belongs to. You can only join a household
+    // whose (secret, random) code you already know.
+    match /members/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list, delete: if isAdmin();
+      allow create, update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['h', 'at'])
+        && request.resource.data.h is string
+        && request.resource.data.h.matches('^[a-z0-9]{20,64}$')
+        && request.resource.data.at == request.time
+        && exists(/databases/$(database)/documents/households/$(request.resource.data.h));
+    }
+
+    // Household progress summary.
+    match /progress/{h} {
+      allow read: if isAdmin() || isMember(h);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isMember(h) && (touchActive() || summaryClaim(h)));
+
+      // Per-day attempt records.
+      match /d/{n} {
+        allow read: if isAdmin() || isMember(h);
+        allow create: if isAdmin()
+          || (isMember(h) && validDay(n) && dayOpen(h, n) && firstGuess());
+        allow update: if isAdmin()
+          || (isMember(h) && validDay(n)
+              && ((dayOpen(h, n) && nextGuess(n)) || claim(n)));
+        allow delete: if isAdmin();
+      }
+    }
+
+    // Everything else: denied.
+  }
+}

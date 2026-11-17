@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hash Tool</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Special+Elite&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/casefile.css">
+</head>
+<body>
+<main class="sheet" style="max-width:720px">
+  <h1>Hash tool</h1>
+  <p class="muted small">Runs entirely in this browser — nothing is sent anywhere. Same normalization the puzzles use: UPPERCASE, accents removed, only A–Z and 0–9 kept.</p>
+  <label for="in">Answer:</label>
+  <input type="text" id="in" autocomplete="off" spellcheck="false">
+  <label>Normalized:</label>
+  <div class="hashout" id="norm">—</div>
+  <label>SHA-256:</label>
+  <div class="hashout" id="out">—</div>
+  <p><button class="btn btn-small" type="button" id="copy">Copy hash</button></p>
+</main>
+<script type="module">
+  import { normalize, sha256Hex } from '../assets/js/common.js';
+  const input = document.getElementById('in');
+  const norm = document.getElementById('norm');
+  const out = document.getElementById('out');
+  input.addEventListener('input', async () => {
+    const n = normalize(input.value);
+    norm.textContent = n || '—';
+    out.textContent = n ? await sha256Hex(n) : '—';
+  });
+  document.getElementById('copy').addEventListener('click', () => navigator.clipboard.writeText(out.textContent));
+</script>
+</body>
+</html>

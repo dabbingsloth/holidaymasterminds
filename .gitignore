@@ -1,0 +1,6 @@
+# Keep puzzle content, answers and backups out of the (public) repo
+private/
+*.json
+!package.json
+.DS_Store
+Thumbs.db
