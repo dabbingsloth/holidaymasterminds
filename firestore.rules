@@ -3,7 +3,7 @@ rules_version = '2';
 // =====================================================================
 //  THE MASTERMINDS — Firestore security rules
 //  Paste this whole file into: Firebase console → Firestore Database →
-//  Rules tab → Publish.  Replace the two ADMIN UIDs below first.
+//  Rules tab → Publish.  Admins: Alexis (MV3m…), Mila (mv5s…).
 // =====================================================================
 
 service cloud.firestore {
@@ -20,7 +20,7 @@ service cloud.firestore {
     function isAdmin() {
       return signedIn()
         && request.auth.token.firebase.sign_in_provider == 'password'
-        && request.auth.uid in ['ADMIN_UID_ALEXIS', 'ADMIN_UID_MILA'];
+        && request.auth.uid in ['MV3mvHOBXKUpH8gGK0A0hdVSRwt1', 'mv5sqDZZWUd6Pq67CEqFZzTVmmn2'];
     }
 
     function myHousehold() {
